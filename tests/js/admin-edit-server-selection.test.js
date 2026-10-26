@@ -1709,9 +1709,9 @@ describe("editServer restores OAuth settings from camelCase API response (#3405)
     oauthSection.className = "hidden";
     form.appendChild(oauthSection);
 
-    // OAuth authorization server field
-    const authServerInput = oauthDoc.createElement("input");
-    authServerInput.id = "edit-server-oauth-authorization-server";
+    // OAuth authorization servers field
+    const authServerInput = oauthDoc.createElement("textarea");
+    authServerInput.id = "edit-server-oauth-authorization-servers";
     form.appendChild(authServerInput);
 
     // OAuth scopes field
@@ -1723,6 +1723,11 @@ describe("editServer restores OAuth settings from camelCase API response (#3405)
     const tokenEndpointInput = oauthDoc.createElement("input");
     tokenEndpointInput.id = "edit-server-oauth-token-endpoint";
     form.appendChild(tokenEndpointInput);
+
+    // OAuth resource (audience) field
+    const resourceInput = oauthDoc.createElement("input");
+    resourceInput.id = "edit-server-oauth-resource";
+    form.appendChild(resourceInput);
 
     oauthDoc.body.appendChild(form);
 
@@ -1777,7 +1782,7 @@ describe("editServer restores OAuth settings from camelCase API response (#3405)
     expect(section.classList.contains("hidden")).toBe(false);
 
     const authServer = oauthDoc.getElementById(
-      "edit-server-oauth-authorization-server"
+      "edit-server-oauth-authorization-servers"
     );
     expect(authServer.value).toBe("https://idp.example.com");
 
@@ -1817,7 +1822,7 @@ describe("editServer restores OAuth settings from camelCase API response (#3405)
 
     // Fields should be cleared
     const authServer = oauthDoc.getElementById(
-      "edit-server-oauth-authorization-server"
+      "edit-server-oauth-authorization-servers"
     );
     expect(authServer.value).toBe("");
 
@@ -1828,6 +1833,71 @@ describe("editServer restores OAuth settings from camelCase API response (#3405)
       "edit-server-oauth-token-endpoint"
     );
     expect(tokenEndpoint.value).toBe("");
+
+    const resource = oauthDoc.getElementById("edit-server-oauth-resource");
+    expect(resource.value).toBe("");
+  });
+
+  test("prefills every authorization server and a string resource", async () => {
+    buildEditServerOAuthDOM();
+    mockFetch({
+      id: "srv-multi-as",
+      name: "MultiAsServer",
+      visibility: "team",
+      oauthEnabled: true,
+      oauthConfig: {
+        authorization_servers: [
+          "https://shim.example.com",
+          "https://tenant.verify.ibm.com/oidc/endpoint/default",
+        ],
+        resource: "agent-client-id",
+      },
+      associatedTools: [],
+      associatedResources: [],
+      associatedPrompts: [],
+    });
+
+    try {
+      await oauthWin.editServer("srv-multi-as");
+    } catch {
+      // editServer may throw on missing DOM elements beyond OAuth
+    }
+
+    const authServer = oauthDoc.getElementById(
+      "edit-server-oauth-authorization-servers"
+    );
+    expect(authServer.value).toBe(
+      "https://shim.example.com\nhttps://tenant.verify.ibm.com/oidc/endpoint/default"
+    );
+
+    const resource = oauthDoc.getElementById("edit-server-oauth-resource");
+    expect(resource.value).toBe("agent-client-id");
+  });
+
+  test("prefills a list resource as comma-separated values", async () => {
+    buildEditServerOAuthDOM();
+    mockFetch({
+      id: "srv-list-aud",
+      name: "ListAudServer",
+      visibility: "team",
+      oauthEnabled: true,
+      oauthConfig: {
+        authorization_servers: ["https://idp.example.com"],
+        resource: ["aud-a", "aud-b"],
+      },
+      associatedTools: [],
+      associatedResources: [],
+      associatedPrompts: [],
+    });
+
+    try {
+      await oauthWin.editServer("srv-list-aud");
+    } catch {
+      // editServer may throw on missing DOM elements beyond OAuth
+    }
+
+    const resource = oauthDoc.getElementById("edit-server-oauth-resource");
+    expect(resource.value).toBe("aud-a, aud-b");
   });
 
   test("handles authorization_server string fallback", async () => {
@@ -1853,7 +1923,7 @@ describe("editServer restores OAuth settings from camelCase API response (#3405)
     }
 
     const authServer = oauthDoc.getElementById(
-      "edit-server-oauth-authorization-server"
+      "edit-server-oauth-authorization-servers"
     );
     expect(authServer.value).toBe("https://auth.example.com");
 
@@ -1895,7 +1965,7 @@ describe("editServer restores OAuth settings from camelCase API response (#3405)
 
     // Fields remain empty because oauth_config (snake_case) is not read
     const authServer = oauthDoc.getElementById(
-      "edit-server-oauth-authorization-server"
+      "edit-server-oauth-authorization-servers"
     );
     expect(authServer.value).toBe("");
   });

@@ -1750,6 +1750,28 @@ class TestServerService:
         test_db.commit.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_update_server_partial_oauth_config_replaces_stored_config(self, server_service, mock_server, test_db):
+        """PUT /servers/{id} keeps replace semantics: keys absent from the new oauth_config are dropped."""
+        mock_server.oauth_enabled = True
+        mock_server.oauth_config = {
+            "authorization_servers": ["https://old.example.com", "https://second.example.com"],
+            "resource": "agent-client-id",
+            "scopes_supported": ["openid"],
+        }
+        test_db.get = Mock(return_value=mock_server)
+        test_db.commit = Mock()
+        test_db.refresh = Mock()
+        test_db.execute = Mock(return_value=Mock(scalar_one_or_none=Mock(return_value=mock_server)))
+        server_service._notify_server_updated = AsyncMock()
+        server_service.convert_server_to_read = Mock(return_value=MagicMock())
+
+        server_update = ServerUpdate(oauth_enabled=True, oauth_config={"authorization_servers": ["https://idp.example.com"]})
+        with patch("mcpgateway.services.permission_service.PermissionService.check_resource_ownership", new=AsyncMock(return_value=True)):
+            await server_service.update_server(test_db, "550e8400e29b41d4a716446655440001", server_update, "user@example.com")  # pragma: allowlist secret
+
+        assert mock_server.oauth_config == {"authorization_servers": ["https://idp.example.com"]}
+
+    @pytest.mark.asyncio
     async def test_update_server_disable_oauth(self, server_service, mock_server, test_db):
         """Test disabling OAuth on a server."""
         # Setup existing server with OAuth enabled

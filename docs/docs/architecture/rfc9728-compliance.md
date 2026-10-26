@@ -208,6 +208,27 @@ For backward compatibility, the system also accepts a singular string form:
 
 This is automatically wrapped in an array in the response.
 
+### Admin UI Fields
+
+The Add Server and Edit Server forms expose the following OAuth fields when **Enable OAuth 2.0** is checked:
+
+| Field | Stored key | Notes |
+|-------|------------|-------|
+| Authorization Server URLs | `authorization_servers` | One URL per line (commas also work). Tokens from any listed issuer are accepted. Duplicates are removed. Use several entries when the IdP issues tokens under more than one issuer, for example IBM Security Verify behind a shim. |
+| Scopes | `scopes_supported` | Space- or comma-separated. |
+| Token Endpoint URL | `token_endpoint` | Optional. |
+| Resource (Audience) | `resource` | Expected token audience. A single value is stored as a string; several absolute URIs separated by commas are stored as a list. Leave blank to use the server's canonical URL and audience auto-learn. Set it explicitly for IdPs such as IBM Security Verify or Authentik that issue an opaque `client_id` audience. |
+
+**Edit save behavior:**
+
+- The Edit form shows every stored authorization server and the stored `resource` value (a list is shown comma-separated).
+- Saving the Edit form replaces only the four keys above. Other keys set through the REST API (for example `client_id`, `client_secret`, or `audience`) stay unchanged.
+- Legacy `authorization_server` and `scopes` keys are removed on save, because their plural counterparts are written.
+- Clearing the Resource (Audience) field removes `resource`, so the next verified token can set it again through audience auto-learn.
+- Clearing **Enable OAuth 2.0** removes the whole `oauth_config`.
+
+`PUT /servers/{id}` is unaffected: an `oauth_config` in the request body replaces the stored configuration.
+
 ### Global Settings
 
 **Environment Variables:**

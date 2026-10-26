@@ -639,21 +639,8 @@ class TestAdminServerRoutes:
         assert server_create.oauth_config["scopes_supported"] == ["openid", "profile"]
         assert server_create.oauth_config["token_endpoint"] == "https://idp.example.com/token"
 
-    @patch.object(ServerService, "register_server")
-    async def test_admin_add_server_oauth_with_audience(self, mock_register_server, mock_request, mock_db, monkeypatch):
-        """Test adding server with OAuth audience parameter (for Atlassian, Auth0, etc.)."""
-        form_data = FakeForm(
-            {
-                "name": "Server_With_Audience",
-                "oauth_enabled": "on",
-                "oauth_authorization_server": "https://auth.atlassian.com",
-                "oauth_audience": "api.atlassian.com",
-                "oauth_scopes": "read:jira-work write:jira-work",
-                "oauth_token_endpoint": "https://auth.atlassian.com/oauth/token",
-            }
-        )
-        mock_request.form = AsyncMock(return_value=form_data)
-
+    @staticmethod
+    def _patch_add_server_dependencies(monkeypatch):
         team_service = MagicMock()
         team_service.verify_team_for_user = AsyncMock(return_value=None)
         monkeypatch.setattr("mcpgateway.admin.TeamManagementService", lambda db: team_service)
@@ -669,16 +656,76 @@ class TestAdminServerRoutes:
             },
         )
 
+    @patch.object(ServerService, "register_server")
+    async def test_admin_add_server_oauth_ignores_stray_audience_field(self, mock_register_server, mock_request, mock_db, monkeypatch):
+        """A stray oauth_audience form field is not stored; the audience comes only from oauth_resource."""
+        form_data = FakeForm(
+            {
+                "name": "Server_With_Audience",
+                "oauth_enabled": "on",
+                "oauth_authorization_server": "https://auth.atlassian.com",
+                "oauth_audience": "api.atlassian.com",
+                "oauth_scopes": "read:jira-work write:jira-work",
+                "oauth_token_endpoint": "https://auth.atlassian.com/oauth/token",
+            }
+        )
+        mock_request.form = AsyncMock(return_value=form_data)
+        self._patch_add_server_dependencies(monkeypatch)
+
         result = await admin_add_server(mock_request, mock_db, user={"email": "test-user", "db": mock_db})
-        assert isinstance(result, JSONResponse)
         assert result.status_code == 200
 
         server_create = mock_register_server.call_args.args[1]
         assert server_create.oauth_enabled is True
-        assert server_create.oauth_config["authorization_servers"] == ["https://auth.atlassian.com"]
-        assert server_create.oauth_config["audience"] == "api.atlassian.com"
-        assert server_create.oauth_config["scopes_supported"] == ["read:jira-work", "write:jira-work"]
-        assert server_create.oauth_config["token_endpoint"] == "https://auth.atlassian.com/oauth/token"
+        assert server_create.oauth_config == {
+            "authorization_servers": ["https://auth.atlassian.com"],
+            "scopes_supported": ["read:jira-work", "write:jira-work"],
+            "token_endpoint": "https://auth.atlassian.com/oauth/token",
+        }
+
+    @patch.object(ServerService, "register_server")
+    async def test_admin_add_server_oauth_multiple_authorization_servers_and_resource(self, mock_register_server, mock_request, mock_db, monkeypatch):
+        """Two authorization servers on separate lines and an opaque resource are stored."""
+        form_data = FakeForm(
+            {
+                "name": "Server_Multi_AS",
+                "oauth_enabled": "on",
+                "oauth_authorization_servers": "https://shim.example.com\nhttps://tenant.verify.ibm.com/oidc/endpoint/default",
+                "oauth_resource": "agent-client-id",
+            }
+        )
+        mock_request.form = AsyncMock(return_value=form_data)
+        self._patch_add_server_dependencies(monkeypatch)
+
+        result = await admin_add_server(mock_request, mock_db, user={"email": "test-user", "db": mock_db})
+        assert result.status_code == 200
+
+        server_create = mock_register_server.call_args.args[1]
+        assert server_create.oauth_config == {
+            "authorization_servers": ["https://shim.example.com", "https://tenant.verify.ibm.com/oidc/endpoint/default"],
+            "resource": "agent-client-id",
+        }
+
+    @patch.object(ServerService, "register_server")
+    async def test_admin_add_server_oauth_list_resource(self, mock_register_server, mock_request, mock_db, monkeypatch):
+        """Several absolute URI audiences are stored as a list."""
+        form_data = FakeForm(
+            {
+                "name": "Server_List_Resource",
+                "oauth_enabled": "on",
+                "oauth_authorization_servers": "https://a.example.com, https://b.example.com, https://a.example.com",
+                "oauth_resource": "https://a.example.com, https://b.example.com",
+            }
+        )
+        mock_request.form = AsyncMock(return_value=form_data)
+        self._patch_add_server_dependencies(monkeypatch)
+
+        result = await admin_add_server(mock_request, mock_db, user={"email": "test-user", "db": mock_db})
+        assert result.status_code == 200
+
+        server_create = mock_register_server.call_args.args[1]
+        assert server_create.oauth_config["authorization_servers"] == ["https://a.example.com", "https://b.example.com"]
+        assert server_create.oauth_config["resource"] == ["https://a.example.com", "https://b.example.com"]
 
     @patch.object(ServerService, "register_server")
     async def test_admin_add_server_select_all_json_decode_error(self, mock_register_server, mock_request, mock_db, monkeypatch):
@@ -821,56 +868,144 @@ class TestAdminServerRoutes:
         assert server_update.oauth_config["authorization_servers"] == ["https://idp.example.com"]
         assert server_update.oauth_config["scopes_supported"] == ["openid", "profile", "email"]
 
-    @patch.object(ServerService, "update_server")
-    async def test_admin_edit_server_oauth_with_audience(self, mock_update_server, mock_request, mock_db):
-        """Test editing server with OAuth audience parameter (for Atlassian, Auth0, etc.)."""
-        server_id = "00000000-0000-0000-0000-000000000001"
-        form_data = FakeForm(
-            {
-                "id": server_id,
-                "name": "OAuth_Server_With_Audience",
-                "description": "Server with OAuth audience",
-                "oauth_enabled": "on",
-                "oauth_authorization_server": "https://auth.atlassian.com",
-                "oauth_audience": "api.atlassian.com",
-                "oauth_scopes": "read:jira-work write:jira-work",
-                "oauth_token_endpoint": "https://auth.atlassian.com/oauth/token",
-                "visibility": "public",
-                "associatedTools": [],
-                "associatedResources": [],
-                "associatedPrompts": [],
-            }
-        )
-        mock_request.form = AsyncMock(return_value=form_data)
-        mock_request.scope = {"root_path": ""}
-
-        mock_server_read = MagicMock()
-        mock_server_read.model_dump.return_value = {
+    @staticmethod
+    def _edit_server_form(server_id, **oauth_fields):
+        fields = {
             "id": server_id,
-            "name": "OAuth_Server_With_Audience",
-            "oauth_enabled": True,
-            "oauth_config": {
-                "authorization_servers": ["https://auth.atlassian.com"],
-                "audience": "api.atlassian.com",
-                "scopes_supported": ["read:jira-work", "write:jira-work"],
-                "token_endpoint": "https://auth.atlassian.com/oauth/token",
-            },
+            "name": "OAuth_Server",
+            "description": "Updated description",
+            "visibility": "public",
+            "associatedTools": [],
+            "associatedResources": [],
+            "associatedPrompts": [],
         }
-        mock_update_server.return_value = mock_server_read
+        fields.update(oauth_fields)
+        return FakeForm(fields)
+
+    @patch.object(ServerService, "update_server")
+    async def test_admin_edit_server_oauth_ignores_stray_audience_field(self, mock_update_server, mock_request, mock_db):
+        """A stray oauth_audience form field is not stored on edit."""
+        server_id = "00000000-0000-0000-0000-000000000001"
+        mock_db.get.return_value = SimpleNamespace(team_id=None, oauth_config=None)
+        mock_request.form = AsyncMock(
+            return_value=self._edit_server_form(
+                server_id,
+                oauth_enabled="on",
+                oauth_authorization_server="https://auth.atlassian.com",
+                oauth_audience="api.atlassian.com",
+                oauth_scopes="read:jira-work write:jira-work",
+                oauth_token_endpoint="https://auth.atlassian.com/oauth/token",
+            )
+        )
 
         result = await admin_edit_server(server_id, mock_request, mock_db, user={"email": "test-user", "db": mock_db})
-
-        assert isinstance(result, JSONResponse)
         assert result.status_code == 200
 
-        mock_update_server.assert_called_once()
-        call_args = mock_update_server.call_args
-        server_update = call_args[0][2]
+        server_update = mock_update_server.call_args[0][2]
         assert server_update.oauth_enabled is True
-        assert server_update.oauth_config is not None
-        assert server_update.oauth_config["audience"] == "api.atlassian.com"
-        assert server_update.oauth_config["authorization_servers"] == ["https://auth.atlassian.com"]
-        assert server_update.oauth_config["scopes_supported"] == ["read:jira-work", "write:jira-work"]
+        assert server_update.oauth_config == {
+            "authorization_servers": ["https://auth.atlassian.com"],
+            "scopes_supported": ["read:jira-work", "write:jira-work"],
+            "token_endpoint": "https://auth.atlassian.com/oauth/token",
+        }
+
+    @patch.object(ServerService, "update_server")
+    async def test_admin_edit_server_oauth_unrelated_edit_keeps_stored_keys(self, mock_update_server, mock_request, mock_db):
+        """An edit with the prefilled OAuth values keeps every stored key, including unmanaged ones."""
+        server_id = "00000000-0000-0000-0000-000000000001"
+        stored_config = {
+            "authorization_servers": ["https://shim.example.com", "https://tenant.verify.ibm.com/oidc/endpoint/default"],
+            "scopes_supported": ["openid"],
+            "resource": "agent-client-id",
+            "client_id": "cid",
+            "client_secret": "gAAAAA-encrypted-value",  # pragma: allowlist secret
+            "audience": "api.example.com",
+        }
+        mock_db.get.return_value = SimpleNamespace(team_id=None, oauth_config=dict(stored_config))
+        mock_request.form = AsyncMock(
+            return_value=self._edit_server_form(
+                server_id,
+                oauth_enabled="on",
+                oauth_authorization_servers="https://shim.example.com\nhttps://tenant.verify.ibm.com/oidc/endpoint/default",
+                oauth_scopes="openid",
+                oauth_resource="agent-client-id",
+            )
+        )
+
+        result = await admin_edit_server(server_id, mock_request, mock_db, user={"email": "test-user", "db": mock_db})
+        assert result.status_code == 200
+
+        server_update = mock_update_server.call_args[0][2]
+        assert server_update.oauth_config == stored_config
+
+    @patch.object(ServerService, "update_server")
+    async def test_admin_edit_server_oauth_empty_resource_removes_it(self, mock_update_server, mock_request, mock_db):
+        """Clearing the resource input removes resource so audience auto-learn can run again."""
+        server_id = "00000000-0000-0000-0000-000000000001"
+        mock_db.get.return_value = SimpleNamespace(
+            team_id=None,
+            oauth_config={"authorization_servers": ["https://idp.example.com"], "resource": "old-aud", "client_id": "cid"},
+        )
+        mock_request.form = AsyncMock(
+            return_value=self._edit_server_form(server_id, oauth_enabled="on", oauth_authorization_servers="https://idp.example.com", oauth_resource="")
+        )
+
+        result = await admin_edit_server(server_id, mock_request, mock_db, user={"email": "test-user", "db": mock_db})
+        assert result.status_code == 200
+
+        server_update = mock_update_server.call_args[0][2]
+        assert server_update.oauth_config == {"authorization_servers": ["https://idp.example.com"], "client_id": "cid"}
+
+    @patch.object(ServerService, "update_server")
+    async def test_admin_edit_server_oauth_removes_legacy_keys(self, mock_update_server, mock_request, mock_db):
+        """Legacy authorization_server and scopes keys are removed when the plural keys are written."""
+        server_id = "00000000-0000-0000-0000-000000000001"
+        mock_db.get.return_value = SimpleNamespace(
+            team_id=None,
+            oauth_config={"authorization_server": "https://old.example.com", "scopes": ["legacy"]},
+        )
+        mock_request.form = AsyncMock(
+            return_value=self._edit_server_form(server_id, oauth_enabled="on", oauth_authorization_servers="https://new.example.com", oauth_scopes="read")
+        )
+
+        result = await admin_edit_server(server_id, mock_request, mock_db, user={"email": "test-user", "db": mock_db})
+        assert result.status_code == 200
+
+        server_update = mock_update_server.call_args[0][2]
+        assert server_update.oauth_config == {"authorization_servers": ["https://new.example.com"], "scopes_supported": ["read"]}
+
+    @patch.object(ServerService, "update_server")
+    async def test_admin_edit_server_oauth_merge_with_explicit_team_id(self, mock_update_server, mock_request, mock_db, monkeypatch):
+        """With an explicit team_id in the form, the stored oauth_config is still loaded for the merge."""
+        server_id = "00000000-0000-0000-0000-000000000001"
+        mock_db.get.return_value = SimpleNamespace(team_id="team-1", oauth_config={"authorization_servers": ["https://idp.example.com"], "client_id": "cid"})
+        team_service = MagicMock()
+        team_service.verify_team_for_user = AsyncMock(side_effect=lambda email, tid: tid)
+        monkeypatch.setattr("mcpgateway.admin.TeamManagementService", lambda db: team_service)
+        mock_request.form = AsyncMock(
+            return_value=self._edit_server_form(server_id, team_id="team-1", visibility="team", oauth_enabled="on", oauth_authorization_servers="https://idp.example.com")
+        )
+
+        result = await admin_edit_server(server_id, mock_request, mock_db, user={"email": "test-user", "db": mock_db})
+        assert result.status_code == 200
+
+        mock_db.get.assert_called_once()
+        server_update = mock_update_server.call_args[0][2]
+        assert server_update.oauth_config == {"authorization_servers": ["https://idp.example.com"], "client_id": "cid"}
+
+    @patch.object(ServerService, "update_server")
+    async def test_admin_edit_server_cleared_oauth_checkbox_clears_stored_config(self, mock_update_server, mock_request, mock_db):
+        """A cleared OAuth checkbox still clears the config, even when one is stored."""
+        server_id = "00000000-0000-0000-0000-000000000001"
+        mock_db.get.return_value = SimpleNamespace(team_id=None, oauth_config={"authorization_servers": ["https://idp.example.com"], "client_id": "cid"})
+        mock_request.form = AsyncMock(return_value=self._edit_server_form(server_id, oauth_authorization_servers="https://idp.example.com"))
+
+        result = await admin_edit_server(server_id, mock_request, mock_db, user={"email": "test-user", "db": mock_db})
+        assert result.status_code == 200
+
+        server_update = mock_update_server.call_args[0][2]
+        assert server_update.oauth_enabled is False
+        assert server_update.oauth_config is None
 
     @patch.object(ServerService, "update_server")
     async def test_admin_edit_server_disable_oauth(self, mock_update_server, mock_request, mock_db):
