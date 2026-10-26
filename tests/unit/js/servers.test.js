@@ -279,7 +279,7 @@ describe("editServer", () => {
     form.appendChild(oauthSection);
 
     const authServerInput = document.createElement("input");
-    authServerInput.id = "edit-server-oauth-authorization-server";
+    authServerInput.id = "edit-server-oauth-authorization-servers";
     form.appendChild(authServerInput);
 
     const scopesInput = document.createElement("input");
@@ -313,6 +313,112 @@ describe("editServer", () => {
     expect(scopesInput.value).toBe("read write");
     expect(tokenEndpointInput.value).toBe("https://auth.example.com/token");
 
+    consoleSpy.mockRestore();
+  });
+
+  function buildOAuthEditForm() {
+    const form = document.createElement("form");
+    form.id = "edit-server-form";
+    document.body.appendChild(form);
+    const ids = [
+      "edit-server-name",
+      "edit-server-id",
+      "edit-server-oauth-scopes",
+      "edit-server-oauth-token-endpoint",
+      "edit-server-oauth-resource",
+    ];
+    const fields = {};
+    ids.forEach((id) => {
+      const input = document.createElement("input");
+      input.id = id;
+      form.appendChild(input);
+      fields[id] = input;
+    });
+    const authServers = document.createElement("textarea");
+    authServers.id = "edit-server-oauth-authorization-servers";
+    form.appendChild(authServers);
+    fields[authServers.id] = authServers;
+    return fields;
+  }
+
+  function mockServerResponse(oauthConfig) {
+    fetchWithTimeout.mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          id: "s1",
+          name: "test-server",
+          oauthEnabled: Boolean(oauthConfig),
+          oauthConfig,
+        }),
+    });
+  }
+
+  test("prefills every authorization server and a string resource", async () => {
+    window.ROOT_PATH = "";
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const fields = buildOAuthEditForm();
+    mockServerResponse({
+      authorization_servers: [
+        "https://shim.example.com",
+        "https://tenant.verify.ibm.com/oidc/endpoint/default",
+      ],
+      resource: "agent-client-id",
+    });
+
+    await editServer("s1");
+
+    expect(fields["edit-server-oauth-authorization-servers"].value).toBe(
+      "https://shim.example.com\nhttps://tenant.verify.ibm.com/oidc/endpoint/default"
+    );
+    expect(fields["edit-server-oauth-resource"].value).toBe("agent-client-id");
+    consoleSpy.mockRestore();
+  });
+
+  test("prefills a list resource as comma-separated values", async () => {
+    window.ROOT_PATH = "";
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const fields = buildOAuthEditForm();
+    mockServerResponse({
+      authorization_servers: ["https://idp.example.com"],
+      resource: ["aud-a", "aud-b"],
+    });
+
+    await editServer("s1");
+
+    expect(fields["edit-server-oauth-resource"].value).toBe("aud-a, aud-b");
+    consoleSpy.mockRestore();
+  });
+
+  test("prefills the legacy authorization_server key", async () => {
+    window.ROOT_PATH = "";
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const fields = buildOAuthEditForm();
+    mockServerResponse({ authorization_server: "https://legacy.example.com" });
+
+    await editServer("s1");
+
+    expect(fields["edit-server-oauth-authorization-servers"].value).toBe(
+      "https://legacy.example.com"
+    );
+    expect(fields["edit-server-oauth-resource"].value).toBe("");
+    consoleSpy.mockRestore();
+  });
+
+  test("clears OAuth inputs when no config exists", async () => {
+    window.ROOT_PATH = "";
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const fields = buildOAuthEditForm();
+    fields["edit-server-oauth-authorization-servers"].value = "https://stale.example.com";
+    fields["edit-server-oauth-resource"].value = "stale-aud";
+    mockServerResponse(null);
+
+    await editServer("s1");
+
+    expect(fields["edit-server-oauth-authorization-servers"].value).toBe("");
+    expect(fields["edit-server-oauth-scopes"].value).toBe("");
+    expect(fields["edit-server-oauth-token-endpoint"].value).toBe("");
+    expect(fields["edit-server-oauth-resource"].value).toBe("");
     consoleSpy.mockRestore();
   });
 

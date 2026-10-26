@@ -264,6 +264,71 @@ class TestAdminEditServerErrors:
             response = await admin_edit_server("test-id", mock_edit_request, mock_db, user=mock_user)
             assert response.status_code == 403
 
+    @staticmethod
+    def _oauth_edit_request(mock_edit_request):
+        mock_edit_request.form = AsyncMock(
+            return_value=FakeForm(
+                {
+                    "name": "updated_server",
+                    "visibility": "private",
+                    "oauth_enabled": "on",
+                    "oauth_authorization_servers": "https://attacker.example.com",
+                }
+            )
+        )
+        return mock_edit_request
+
+    @pytest.mark.asyncio
+    async def test_admin_edit_server_oauth_denied_without_update_permission(self, mock_edit_request, mock_db, mock_user, monkeypatch):
+        """A caller without servers.update is denied before the stored oauth_config is read or merged."""
+        # Third-Party
+        from fastapi import HTTPException
+
+        # First-Party
+        from mcpgateway.admin import admin_edit_server
+
+        deny_service = MagicMock()
+        deny_service.check_permission = AsyncMock(return_value=False)
+        monkeypatch.setattr("mcpgateway.middleware.rbac.PermissionService", lambda db: deny_service)
+        monkeypatch.setattr("mcpgateway.plugins.get_plugin_manager", AsyncMock(return_value=None))
+        stored_config = {"authorization_servers": ["https://idp.example.com"], "resource": "aud"}
+        mock_db.get.return_value = MagicMock(team_id="team-1", oauth_config=dict(stored_config))
+
+        with patch("mcpgateway.admin.server_service") as mock_service:
+            mock_service.update_server = AsyncMock()
+            with pytest.raises(HTTPException) as exc_info:
+                await admin_edit_server("test-id", self._oauth_edit_request(mock_edit_request), mock_db, user={**mock_user, "is_admin": False})
+
+        assert exc_info.value.status_code == 403
+        mock_service.update_server.assert_not_awaited()
+        mock_db.get.assert_not_called()
+        assert mock_db.get.return_value.oauth_config == stored_config
+
+    @pytest.mark.asyncio
+    async def test_admin_edit_server_oauth_wrong_team_leaves_config_unchanged(self, mock_edit_request, mock_db, mock_user, allow_permission):
+        """A wrong-team ownership denial from update_server returns 403 without echoing or storing the merged config."""
+        # First-Party
+        from mcpgateway.admin import admin_edit_server
+
+        stored_config = {"authorization_servers": ["https://idp.example.com"], "client_id": "cid"}
+        stored_server = MagicMock(team_id="other-team", oauth_config=dict(stored_config))
+        mock_db.get.return_value = stored_server
+
+        with (
+            patch("mcpgateway.admin.server_service") as mock_service,
+            patch("mcpgateway.admin.TeamManagementService") as mock_team_service,
+        ):
+            mock_team_service.return_value.verify_team_for_user = AsyncMock(return_value="other-team")
+            mock_service.update_server = AsyncMock(side_effect=PermissionError("Only the owner can update this server"))
+
+            response = await admin_edit_server("test-id", self._oauth_edit_request(mock_edit_request), mock_db, user=mock_user)
+
+        assert response.status_code == 403
+        assert b"attacker.example.com" not in response.body
+        assert b"cid" not in response.body
+        assert stored_server.oauth_config == stored_config
+        mock_db.commit.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_admin_edit_server_runtime_error(self, mock_edit_request, mock_db, mock_user, allow_permission):
         """Test RuntimeError handling in admin_edit_server."""

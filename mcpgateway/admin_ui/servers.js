@@ -806,12 +806,13 @@ export const editServer = async function (serverId) {
       "edit-server-oauth-config-section"
     );
     const oauthAuthServerField = safeGetElement(
-      "edit-server-oauth-authorization-server"
+      "edit-server-oauth-authorization-servers"
     );
     const oauthScopesField = safeGetElement("edit-server-oauth-scopes");
     const oauthTokenEndpointField = safeGetElement(
       "edit-server-oauth-token-endpoint"
     );
+    const oauthResourceField = safeGetElement("edit-server-oauth-resource");
 
     if (oauthEnabledCheckbox) {
       oauthEnabledCheckbox.checked = server.oauthEnabled || false;
@@ -828,18 +829,18 @@ export const editServer = async function (serverId) {
 
     // Populate OAuth config fields if oauthConfig exists
     if (server.oauthConfig) {
-      // Extract authorization server (may be in authorization_servers array or authorization_server string)
-      let authServer = "";
+      // Show every authorization server (or the legacy authorization_server string), one per line
+      let authServers = [];
       if (
-        server.oauthConfig.authorization_servers &&
+        Array.isArray(server.oauthConfig.authorization_servers) &&
         server.oauthConfig.authorization_servers.length > 0
       ) {
-        authServer = server.oauthConfig.authorization_servers[0];
+        authServers = server.oauthConfig.authorization_servers;
       } else if (server.oauthConfig.authorization_server) {
-        authServer = server.oauthConfig.authorization_server;
+        authServers = [server.oauthConfig.authorization_server];
       }
       if (oauthAuthServerField) {
-        oauthAuthServerField.value = authServer;
+        oauthAuthServerField.value = authServers.join("\n");
       }
 
       // Extract scopes (may be scopes_supported array or scopes array)
@@ -855,11 +856,19 @@ export const editServer = async function (serverId) {
       if (oauthTokenEndpointField) {
         oauthTokenEndpointField.value = server.oauthConfig.token_endpoint || "";
       }
+
+      if (oauthResourceField) {
+        const resource = server.oauthConfig.resource;
+        oauthResourceField.value = Array.isArray(resource)
+          ? resource.join(", ")
+          : resource || "";
+      }
     } else {
       // Clear OAuth config fields when no config exists
       if (oauthAuthServerField) oauthAuthServerField.value = "";
       if (oauthScopesField) oauthScopesField.value = "";
       if (oauthTokenEndpointField) oauthTokenEndpointField.value = "";
+      if (oauthResourceField) oauthResourceField.value = "";
     }
 
     // Store server data for modal population

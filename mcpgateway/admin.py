@@ -1051,6 +1051,91 @@ async def _assemble_oauth_config_from_fields(fields: Any, *, encrypt_secret: boo
     return oauth_config
 
 
+_SERVER_OAUTH_FORM_MANAGED_KEYS = frozenset({"authorization_servers", "scopes_supported", "token_endpoint", "resource"})
+_SERVER_OAUTH_FORM_LEGACY_KEYS = frozenset({"authorization_server", "scopes"})
+
+
+def _assemble_server_oauth_config_from_form(form: Any) -> Optional[Dict[str, Any]]:
+    """Assemble the form-managed part of a virtual-server RFC 9728 ``oauth_config``.
+
+    Reads ``oauth_authorization_servers`` (newline, comma, or whitespace
+    separated; falls back to the legacy single-value
+    ``oauth_authorization_server`` field), ``oauth_scopes``,
+    ``oauth_token_endpoint``, and ``oauth_resource``. The output keys are
+    limited to ``_SERVER_OAUTH_FORM_MANAGED_KEYS``.
+
+    Args:
+        form: Mapping with ``.get()`` containing the ``oauth_*`` form fields.
+
+    Returns:
+        The managed ``oauth_config`` dict, or ``None`` when no authorization
+        server is given.
+
+    Examples:
+        >>> _assemble_server_oauth_config_from_form({"oauth_authorization_servers": "https://a.example.com\\nhttps://b.example.com"})
+        {'authorization_servers': ['https://a.example.com', 'https://b.example.com']}
+        >>> _assemble_server_oauth_config_from_form({"oauth_authorization_servers": "https://a.example.com, https://b.example.com, https://a.example.com"})
+        {'authorization_servers': ['https://a.example.com', 'https://b.example.com']}
+        >>> _assemble_server_oauth_config_from_form({"oauth_authorization_server": "https://idp.example.com"})
+        {'authorization_servers': ['https://idp.example.com']}
+        >>> _assemble_server_oauth_config_from_form({"oauth_authorization_servers": "https://new.example.com", "oauth_authorization_server": "https://old.example.com"})
+        {'authorization_servers': ['https://new.example.com']}
+        >>> _assemble_server_oauth_config_from_form({"oauth_authorization_servers": "  ", "oauth_scopes": "read"}) is None
+        True
+        >>> _assemble_server_oauth_config_from_form({}) is None
+        True
+        >>> config = _assemble_server_oauth_config_from_form(
+        ...     {"oauth_authorization_servers": "https://a.example.com", "oauth_scopes": "read, write", "oauth_token_endpoint": " https://a.example.com/token ", "oauth_resource": "agent-client-id"}
+        ... )
+        >>> config == {"authorization_servers": ["https://a.example.com"], "scopes_supported": ["read", "write"], "token_endpoint": "https://a.example.com/token", "resource": "agent-client-id"}
+        True
+    """
+    raw_servers = str(form.get("oauth_authorization_servers") or "").strip() or str(form.get("oauth_authorization_server") or "").strip()
+    authorization_servers = list(dict.fromkeys(s for s in re.split(r"[,\s]+", raw_servers) if s))
+    if not authorization_servers:
+        return None
+
+    oauth_config: Dict[str, Any] = {"authorization_servers": authorization_servers}
+    scopes = [s for s in str(form.get("oauth_scopes") or "").replace(",", " ").split() if s]
+    if scopes:
+        oauth_config["scopes_supported"] = scopes
+    token_endpoint = str(form.get("oauth_token_endpoint") or "").strip()
+    if token_endpoint:
+        oauth_config["token_endpoint"] = token_endpoint
+    resource = parse_oauth_resource_form(form.get("oauth_resource"))
+    if resource:
+        oauth_config["resource"] = resource
+    return oauth_config
+
+
+def _merge_server_oauth_form_config(stored: Optional[Dict[str, Any]], managed: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge form-managed OAuth keys into a stored virtual-server ``oauth_config``.
+
+    Keys the form manages (and their legacy singular/alias keys) are replaced
+    by ``managed``; an absent managed key is removed. All other stored keys,
+    including encrypted secrets, are kept unchanged.
+
+    Args:
+        stored: The ``oauth_config`` currently stored on the server, if any.
+        managed: Output of :func:`_assemble_server_oauth_config_from_form`.
+
+    Returns:
+        The merged ``oauth_config`` dict.
+
+    Examples:
+        >>> stored = {"authorization_server": "https://old.example.com", "scopes": ["x"], "resource": "aud", "client_id": "cid", "audience": "api"}
+        >>> merged = _merge_server_oauth_form_config(stored, {"authorization_servers": ["https://a.example.com"]})
+        >>> merged == {"client_id": "cid", "audience": "api", "authorization_servers": ["https://a.example.com"]}
+        True
+        >>> _merge_server_oauth_form_config(None, {"authorization_servers": ["https://a.example.com"]})
+        {'authorization_servers': ['https://a.example.com']}
+    """
+    owned_keys = _SERVER_OAUTH_FORM_MANAGED_KEYS | _SERVER_OAUTH_FORM_LEGACY_KEYS
+    merged = {k: v for k, v in stored.items() if k not in owned_keys} if isinstance(stored, dict) else {}
+    merged.update(managed)
+    return merged
+
+
 async def _parse_gateway_data_from_request(request: Request) -> dict[str, Any]:
     """Parse gateway data from either JSON body or form data.
 
@@ -3192,23 +3277,8 @@ async def admin_add_server(request: Request, db: Session = Depends(get_db), user
         oauth_enabled = form.get("oauth_enabled") == "on"
         oauth_config = None
         if oauth_enabled:
-            authorization_server = str(form.get("oauth_authorization_server", "")).strip()
-            scopes_str = str(form.get("oauth_scopes", "")).strip()
-            token_endpoint = str(form.get("oauth_token_endpoint", "")).strip()
-
-            if authorization_server:
-                oauth_config = {"authorization_servers": [authorization_server]}
-                if scopes_str:
-                    # Convert space-separated scopes to list
-                    oauth_config["scopes_supported"] = scopes_str.split()
-                if token_endpoint:
-                    oauth_config["token_endpoint"] = token_endpoint
-
-                # Add audience parameter (for Atlassian, Auth0, and other non-RFC-8707 providers)
-                oauth_audience = str(form.get("oauth_audience", "")).strip()
-                if oauth_audience:
-                    oauth_config["audience"] = oauth_audience
-            else:
+            oauth_config = _assemble_server_oauth_config_from_form(form)
+            if oauth_config is None:
                 # Invalid or incomplete OAuth configuration; disable OAuth to avoid inconsistent state
                 LOGGER.warning(
                     "OAuth was enabled for server '%s' but no authorization server was provided; disabling OAuth for this server.",
@@ -3331,6 +3401,7 @@ async def admin_edit_server(
         # Preserve existing server's team_id when no explicit team_id is provided.
         # Without this guard, verify_team_for_user() falls back to the user's
         # personal team, silently reassigning the server on every edit.
+        existing_server = None
         if not team_id:
             existing_server = db.get(DbServer, server_id)
             existing_team = getattr(existing_server, "team_id", None) if existing_server else None
@@ -3354,22 +3425,11 @@ async def admin_edit_server(
         oauth_enabled = form.get("oauth_enabled") == "on"
         oauth_config = None
         if oauth_enabled:
-            authorization_server = str(form.get("oauth_authorization_server", "")).strip()
-            scopes_str = str(form.get("oauth_scopes", "")).strip()
-            token_endpoint = str(form.get("oauth_token_endpoint", "")).strip()
-
-            if authorization_server:
-                oauth_config = {"authorization_servers": [authorization_server]}
-                if scopes_str:
-                    # Convert space-separated scopes to list
-                    oauth_config["scopes_supported"] = scopes_str.split()
-                if token_endpoint:
-                    oauth_config["token_endpoint"] = token_endpoint
-
-                # Add audience parameter (for Atlassian, Auth0, and other non-RFC-8707 providers)
-                oauth_audience = str(form.get("oauth_audience", "")).strip()
-                if oauth_audience:
-                    oauth_config["audience"] = oauth_audience
+            managed_oauth_config = _assemble_server_oauth_config_from_form(form)
+            if managed_oauth_config is not None:
+                if existing_server is None:
+                    existing_server = db.get(DbServer, server_id)
+                oauth_config = _merge_server_oauth_form_config(getattr(existing_server, "oauth_config", None), managed_oauth_config)
             else:
                 # Invalid or incomplete OAuth configuration; disable OAuth to avoid inconsistent state
                 LOGGER.warning(
