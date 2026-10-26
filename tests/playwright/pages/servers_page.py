@@ -195,9 +195,9 @@ class ServersPage(BasePage):
         return self.page.locator("#server-oauth-config-section")
 
     @property
-    def oauth_authorization_server_input(self) -> Locator:
-        """OAuth authorization server URL input."""
-        return self.page.locator("#server-oauth-authorization-server")
+    def oauth_authorization_servers_input(self) -> Locator:
+        """OAuth authorization server URLs textarea (one URL per line)."""
+        return self.page.locator("#server-oauth-authorization-servers")
 
     @property
     def oauth_scopes_input(self) -> Locator:
@@ -208,6 +208,11 @@ class ServersPage(BasePage):
     def oauth_token_endpoint_input(self) -> Locator:
         """OAuth token endpoint URL input."""
         return self.page.locator("#server-oauth-token-endpoint")
+
+    @property
+    def oauth_resource_input(self) -> Locator:
+        """OAuth resource (audience) input."""
+        return self.page.locator("#server-oauth-resource")
 
     # ==================== High-Level Navigation Methods ====================
 
@@ -421,13 +426,14 @@ class ServersPage(BasePage):
 
     # ==================== OAuth Configuration Methods ====================
 
-    def enable_oauth(self, authorization_server: str, scopes: str = "openid profile email", token_endpoint: str = "") -> None:
+    def enable_oauth(self, authorization_server: str, scopes: str = "openid profile email", token_endpoint: str = "", resource: str = "") -> None:
         """Enable and configure OAuth 2.0 for the server.
 
         Args:
-            authorization_server: OAuth authorization server URL (required)
+            authorization_server: OAuth authorization server URLs, one per line (required)
             scopes: Space-separated OAuth scopes (default: "openid profile email")
             token_endpoint: OAuth token endpoint URL (optional)
+            resource: Expected token audience (optional)
         """
         # Enable OAuth
         if not self.oauth_enabled_checkbox.is_checked():
@@ -437,10 +443,12 @@ class ServersPage(BasePage):
         self.wait_for_visible(self.oauth_config_section)
 
         # Fill OAuth configuration
-        self.fill_locator(self.oauth_authorization_server_input, authorization_server)
+        self.fill_locator(self.oauth_authorization_servers_input, authorization_server)
         self.fill_locator(self.oauth_scopes_input, scopes)
         if token_endpoint:
             self.fill_locator(self.oauth_token_endpoint_input, token_endpoint)
+        if resource:
+            self.fill_locator(self.oauth_resource_input, resource)
 
     def disable_oauth(self) -> None:
         """Disable OAuth 2.0 for the server."""

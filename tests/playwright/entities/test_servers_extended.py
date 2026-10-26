@@ -168,14 +168,16 @@ class TestServersExtended:
         servers_page.wait_for_visible(servers_page.oauth_config_section)
 
         # Verify all OAuth fields are present and can be filled
-        servers_page.fill_locator(servers_page.oauth_authorization_server_input, "https://idp.example.com")
+        servers_page.fill_locator(servers_page.oauth_authorization_servers_input, "https://idp.example.com\nhttps://second.example.com")
         servers_page.fill_locator(servers_page.oauth_scopes_input, "openid profile email")
         servers_page.fill_locator(servers_page.oauth_token_endpoint_input, "https://idp.example.com/token")
+        servers_page.fill_locator(servers_page.oauth_resource_input, "agent-client-id")
 
         # Verify values were set
-        assert servers_page.oauth_authorization_server_input.input_value() == "https://idp.example.com"
+        assert servers_page.oauth_authorization_servers_input.input_value() == "https://idp.example.com\nhttps://second.example.com"
         assert servers_page.oauth_scopes_input.input_value() == "openid profile email"
         assert servers_page.oauth_token_endpoint_input.input_value() == "https://idp.example.com/token"
+        assert servers_page.oauth_resource_input.input_value() == "agent-client-id"
 
     def test_show_inactive_servers_toggle(self, servers_page: ServersPage):
         """Test show/hide inactive servers toggle."""
